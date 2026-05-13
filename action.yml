@@ -1,0 +1,22 @@
+name: Hello from Third Party Action
+description: Minimal public action used to test signed and unsigned action refs.
+author: fiam
+
+inputs:
+  message:
+    description: Message to print.
+    required: false
+    default: hello from 3rd party action
+
+runs:
+  using: composite
+  steps:
+    - name: Say hello
+      shell: bash
+      env:
+        HELLO_MESSAGE: ${{ inputs.message }}
+      run: printf '%s\n' "$HELLO_MESSAGE"
+
+branding:
+  icon: message-circle
+  color: blue
