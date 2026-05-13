@@ -1,0 +1,39 @@
+name: Hello from Third Party Action
+description: Minimal public action used to test signed and unsigned action refs.
+author: fiam
+
+inputs:
+  message:
+    description: Message to print.
+    required: false
+    default: hello from 3rd party action
+
+runs:
+  using: composite
+  steps:
+    - name: Say hello
+      shell: bash
+      env:
+        HELLO_MESSAGE: ${{ inputs.message }}
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        case "$ACTION_REF" in
+          signed)
+            action_flavor=signed
+            ;;
+          unsigned)
+            action_flavor=unsigned
+            ;;
+          "")
+            action_flavor=unknown
+            ;;
+          *)
+            action_flavor="ref $ACTION_REF"
+            ;;
+        esac
+
+        printf '%s (%s)\n' "$HELLO_MESSAGE" "$action_flavor"
+
+branding:
+  icon: message-circle
+  color: blue

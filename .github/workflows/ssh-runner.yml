@@ -1,0 +1,83 @@
+name: SSH into runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner image to inspect
+        type: choice
+        required: true
+        default: ubuntu-latest
+        options:
+          - ubuntu-latest
+          - ubuntu-24.04
+          - ubuntu-22.04
+          - macos-latest
+      authorized_keys:
+        description: Optional SSH public key(s); blank uses the triggering GitHub user's public keys
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  ssh:
+    name: SSH shell on ${{ inputs.runner }}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Print runner context
+        shell: bash
+        run: |
+          set -euxo pipefail
+          uname -a
+          id
+          pwd
+          df -h
+          printf 'GITHUB_WORKSPACE=%s\n' "$GITHUB_WORKSPACE"
+          printf 'RUNNER_OS=%s\n' "$RUNNER_OS"
+          printf 'RUNNER_ARCH=%s\n' "$RUNNER_ARCH"
+          printf 'RUNNER_TEMP=%s\n' "$RUNNER_TEMP"
+          printf 'RUNNER_TOOL_CACHE=%s\n' "$RUNNER_TOOL_CACHE"
+
+      - name: Resolve SSH public keys
+        id: ssh_keys
+        shell: bash
+        env:
+          AUTHORIZED_KEYS_INPUT: ${{ inputs.authorized_keys }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "$AUTHORIZED_KEYS_INPUT" ]; then
+            keys="$AUTHORIZED_KEYS_INPUT"
+          else
+            keys="$(
+              curl -fsSL \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/users/${GITHUB_ACTOR}/keys" \
+                | jq -r '.[].key'
+            )"
+          fi
+
+          if [ -z "$keys" ]; then
+            echo "::error::No SSH public keys found for ${GITHUB_ACTOR}. Add one to GitHub or pass authorized_keys when dispatching the workflow."
+            exit 1
+          fi
+
+          {
+            echo "keys<<EOF"
+            printf '%s\n' "$keys"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Start SSH over Cloudflare Tunnel
+        uses: valeriangalliat/action-sshd-cloudflared@v4
+        env:
+          AUTHORIZED_KEYS: ${{ steps.ssh_keys.outputs.keys }}
