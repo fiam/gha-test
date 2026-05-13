@@ -19,7 +19,8 @@ jobs:
 By default, the action prints:
 
 ```text
-hello from 3rd party action
+hello from 3rd party action (signed)
+hello from 3rd party action (unsigned)
 ```
 
 For the demo refs:

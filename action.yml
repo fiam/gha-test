@@ -15,7 +15,24 @@ runs:
       shell: bash
       env:
         HELLO_MESSAGE: ${{ inputs.message }}
-      run: printf '%s\n' "$HELLO_MESSAGE"
+        ACTION_REF: ${{ github.action_ref }}
+      run: |
+        case "$ACTION_REF" in
+          signed)
+            action_flavor=signed
+            ;;
+          unsigned)
+            action_flavor=unsigned
+            ;;
+          "")
+            action_flavor=unknown
+            ;;
+          *)
+            action_flavor="ref $ACTION_REF"
+            ;;
+        esac
+
+        printf '%s (%s)\n' "$HELLO_MESSAGE" "$action_flavor"
 
 branding:
   icon: message-circle
