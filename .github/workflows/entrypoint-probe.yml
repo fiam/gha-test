@@ -51,7 +51,7 @@ jobs:
           Write-Host "fixture workflow pwsh body"
 
       - name: Workflow custom shell path run
-        shell: ./examples/shells/echo-shell {0}
+        shell: /home/runner/work/_actions/fiam/gha-test/main/examples/shells/echo-shell {0}
         run: |
           echo "fixture workflow custom shell body"
 

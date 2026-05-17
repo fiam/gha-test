@@ -126,9 +126,19 @@ function logEnvironment(options) {
 }
 
 function getInput(name, fallback) {
-  const key = `INPUT_${name.replace(/ /g, "_").replace(/-/g, "_").toUpperCase()}`;
-  const value = process.env[key];
-  return value == null || value === "" ? fallback : value;
+  const candidates = unique([
+    `INPUT_${name.replace(/ /g, "_").toUpperCase()}`,
+    `INPUT_${name.replace(/[ -]/g, "_").toUpperCase()}`,
+  ]);
+
+  for (const key of candidates) {
+    const value = process.env[key];
+    if (value != null && value !== "") {
+      return value;
+    }
+  }
+
+  return fallback;
 }
 
 function getBooleanInput(name, fallback) {
