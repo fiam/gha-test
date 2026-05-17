@@ -1,39 +1,33 @@
-name: Hello from Third Party Action
-description: Minimal public action used to test signed and unsigned action refs.
+name: GitHub Actions entrypoint probe
+description: Patch later GitHub Actions entrypoints so they print before execution.
 author: fiam
 
 inputs:
-  message:
-    description: Message to print.
+  marker:
+    description: Text printed before patched entrypoints.
     required: false
-    default: hello from 3rd party action
+    default: "[gha-entrypoint-probe] before"
+  install-shell-shims:
+    description: Add PATH and Bash startup hooks for later run steps in the current job.
+    required: false
+    default: "true"
+  patch-workspace:
+    description: Patch local workflow and action files in GITHUB_WORKSPACE.
+    required: false
+    default: "true"
+  patch-downloaded-actions:
+    description: Patch action metadata already downloaded under RUNNER_WORKSPACE/_actions.
+    required: false
+    default: "true"
+  github-token:
+    description: Token used to fetch the current workflow when the workspace has not been checked out yet.
+    required: false
+    default: ""
 
 runs:
-  using: composite
-  steps:
-    - name: Say hello
-      shell: bash
-      env:
-        HELLO_MESSAGE: ${{ inputs.message }}
-        ACTION_REF: ${{ github.action_ref }}
-      run: |
-        case "$ACTION_REF" in
-          signed)
-            action_flavor=signed
-            ;;
-          unsigned)
-            action_flavor=unsigned
-            ;;
-          "")
-            action_flavor=unknown
-            ;;
-          *)
-            action_flavor="ref $ACTION_REF"
-            ;;
-        esac
-
-        printf '%s (%s)\n' "$HELLO_MESSAGE" "$action_flavor"
+  using: node24
+  main: src/index.js
 
 branding:
-  icon: message-circle
-  color: blue
+  icon: activity
+  color: orange

@@ -1,0 +1,32 @@
+name: Fixture composite action with run entrypoints
+description: Exercises composite run steps and a nested action reference.
+
+runs:
+  using: composite
+  steps:
+    - name: Composite one-line bash run
+      shell: bash
+      run: echo "fixture composite one-line bash body"
+
+    - name: Composite multi-line bash run
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "fixture composite multi-line bash body"
+
+    - name: Composite sh run
+      shell: sh
+      run: echo "fixture composite sh body"
+
+    - name: Composite Python run
+      shell: python
+      run: |
+        print("fixture composite python body")
+
+    - name: Composite PowerShell run
+      shell: pwsh
+      run: |
+        Write-Host "fixture composite pwsh body"
+
+    - name: Composite nested JavaScript action
+      uses: fiam/gha-test/examples/actions/node-all-entrypoints@main

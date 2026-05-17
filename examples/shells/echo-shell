@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -lt 1 ]; then
+  echo "echo-shell expected the GitHub Actions script path as its first argument" >&2
+  exit 64
+fi
+
+printf '[fixture custom shell] before script %s\n' "$1"
+exec bash "$1"

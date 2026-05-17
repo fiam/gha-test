@@ -1,0 +1,11 @@
+name: Fixture Docker action with all Docker entrypoints
+description: Exercises pre-entrypoint, entrypoint, and post-entrypoint.
+
+runs:
+  using: docker
+  image: Dockerfile
+  pre-entrypoint: ./pre-entrypoint.sh
+  entrypoint: ./entrypoint.sh
+  post-entrypoint: ./post-entrypoint.sh
+  args:
+    - fixture docker arg

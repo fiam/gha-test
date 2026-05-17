@@ -1,0 +1,70 @@
+name: Entrypoint probe shared runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_reusable:
+        description: Also run the referenced reusable workflow job
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  prove-on-shared-runner:
+    name: Probe all entrypoint shapes
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Probe entrypoints first
+        uses: fiam/gha-test@main
+        with:
+          github-token: ${{ github.token }}
+          marker: "[entrypoint-probe-demo] before"
+
+      - name: Checkout after the probe
+        uses: actions/checkout@v4
+
+      - name: Workflow default run
+        run: echo "fixture workflow default run body"
+
+      - name: Workflow one-line bash run
+        shell: bash
+        run: echo "fixture workflow bash body"
+
+      - name: Workflow multi-line sh run
+        shell: sh
+        run: |
+          echo "fixture workflow sh body"
+          echo "fixture workflow sh second line"
+
+      - name: Workflow Python run
+        shell: python
+        run: |
+          print("fixture workflow python body")
+
+      - name: Workflow PowerShell run
+        shell: pwsh
+        run: |
+          Write-Host "fixture workflow pwsh body"
+
+      - name: Workflow custom shell path run
+        shell: ./examples/shells/echo-shell {0}
+        run: |
+          echo "fixture workflow custom shell body"
+
+      - name: JavaScript action with pre main post
+        uses: fiam/gha-test/examples/actions/node-all-entrypoints@main
+
+      - name: Composite action with run variants
+        uses: fiam/gha-test/examples/actions/composite-entrypoints@main
+
+      - name: Docker action with all Docker entrypoints
+        uses: fiam/gha-test/examples/actions/docker-entrypoints@main
+
+  referenced-reusable-workflow:
+    name: Referenced reusable workflow fixture
+    if: ${{ inputs.run_reusable }}
+    uses: fiam/gha-test/.github/workflows/reusable-entrypoints.yml@main

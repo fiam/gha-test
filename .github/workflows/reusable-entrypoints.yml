@@ -1,0 +1,16 @@
+name: Reusable entrypoint fixture
+
+on:
+  workflow_call:
+
+jobs:
+  reusable-run-entrypoints:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reusable default run
+        run: echo "fixture reusable workflow default body"
+
+      - name: Reusable bash run
+        shell: bash
+        run: |
+          echo "fixture reusable workflow bash body"
