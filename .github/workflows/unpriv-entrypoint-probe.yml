@@ -1,0 +1,96 @@
+name: Entrypoint probe unprivileged user
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prove-unprivileged-entrypoints:
+    name: Probe entrypoints as unpriv
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Probe entrypoints first as unpriv
+        uses: fiam/gha-test@main
+        with:
+          github-token: ${{ github.token }}
+          marker: "[entrypoint-unpriv-demo] before"
+          setup-unprivileged-user: "true"
+          run-entrypoints-as-user: "true"
+          run-as-user: unpriv
+
+      - name: Checkout after the probe
+        uses: actions/checkout@v4
+
+      - name: Host identity after checkout
+        run: |
+          echo "fixture host identity body"
+          id
+          id -un
+          printf 'HOME=%s\n' "$HOME"
+          stat -c '%U:%G %a %n' "$HOME" "$GITHUB_WORKSPACE"
+
+      - name: Workflow default run
+        run: |
+          echo "fixture workflow default run body"
+          id -un
+
+      - name: Workflow one-line bash run
+        shell: bash
+        run: |
+          echo "fixture workflow bash body: $(id -un)"
+
+      - name: Workflow multi-line sh run
+        shell: sh
+        run: |
+          echo "fixture workflow sh body"
+          id -un
+
+      - name: Workflow Python run
+        shell: python
+        run: |
+          import os
+          import pwd
+          print("fixture workflow python body")
+          print(f"user={pwd.getpwuid(os.getuid()).pw_name} uid={os.getuid()} home={os.environ.get('HOME', '')}")
+
+      - name: Workflow PowerShell run
+        shell: pwsh
+        run: |
+          Write-Host "fixture workflow pwsh body"
+          whoami
+          Write-Host "HOME=$env:HOME"
+
+      - name: Workflow custom shell path run
+        shell: /home/runner/work/_actions/fiam/gha-test/main/examples/shells/echo-shell {0}
+        run: |
+          echo "fixture workflow custom shell body"
+          id -un
+
+      - name: JavaScript action with pre main post
+        uses: fiam/gha-test/examples/actions/node-all-entrypoints@main
+
+      - name: Composite action with run variants
+        uses: fiam/gha-test/examples/actions/composite-entrypoints@main
+
+      - name: Docker action with all Docker entrypoints
+        uses: fiam/gha-test/examples/actions/docker-entrypoints@main
+
+      - name: Checkout repo again for npm build
+        uses: actions/checkout@v4
+        with:
+          path: npm-build-worktree
+
+      - name: Build small npm package after wrapped actions
+        working-directory: npm-build-worktree/examples/npm-unpriv-package
+        run: |
+          echo "fixture npm package build body"
+          id
+          id -un
+          printf 'HOME=%s\n' "$HOME"
+          npm ci
+          npm run build
+          npm test
+          npm start

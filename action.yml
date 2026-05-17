@@ -27,6 +27,18 @@ inputs:
     description: Replace /usr/bin/docker with a temporary wrapper on Linux hosted runners.
     required: false
     default: "true"
+  setup-unprivileged-user:
+    description: Create and prepare the unprivileged user before later entrypoints run.
+    required: false
+    default: "false"
+  run-as-user:
+    description: User that patched entrypoints should run as.
+    required: false
+    default: "unpriv"
+  run-entrypoints-as-user:
+    description: Re-exec patched shell, JavaScript, and Docker entrypoints as run-as-user.
+    required: false
+    default: "false"
 
 runs:
   using: node24

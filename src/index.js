@@ -6,6 +6,16 @@ const path = require("path");
 const TOKEN = "gha-entrypoint-probe";
 
 async function main() {
+  if (
+    process.env.GHA_ENTRYPOINT_PROBE_PRE_RAN === "true" &&
+    process.env.GHA_ENTRYPOINT_PROBE_RUNNING_IN_PRE !== "true"
+  ) {
+    console.log("::group::GitHub Actions entrypoint probe");
+    console.log("scanner already ran from the action pre-hook; skipping duplicate main pass");
+    console.log("::endgroup::");
+    return;
+  }
+
   const workspace = path.resolve(process.env.GITHUB_WORKSPACE || process.cwd());
   const runnerWorkspace = path.resolve(
     process.env.RUNNER_WORKSPACE || path.dirname(workspace),
@@ -29,6 +39,11 @@ async function main() {
     installShellShims: getBooleanInput("install-shell-shims", true),
     patchWorkspace: getBooleanInput("patch-workspace", true),
     patchDownloadedActions: getBooleanInput("patch-downloaded-actions", true),
+    runEntrypointsAsUser: getBooleanInput("run-entrypoints-as-user", false),
+    runAsUser: getInput("run-as-user", "unpriv"),
+    runAsUid: process.env.GHA_ENTRYPOINT_PROBE_UNPRIV_UID || "",
+    runAsGid: process.env.GHA_ENTRYPOINT_PROBE_UNPRIV_GID || "",
+    runAsHome: process.env.GHA_ENTRYPOINT_PROBE_UNPRIV_HOME || "",
     visitedActions: new Set(),
     visitedWorkflows: new Set(),
     queuedActions: [],
@@ -110,6 +125,12 @@ function logEnvironment(options) {
   console.log(`  install shell shims: ${options.installShellShims}`);
   console.log(`  patch workspace: ${options.patchWorkspace}`);
   console.log(`  patch downloaded actions: ${options.patchDownloadedActions}`);
+  console.log(`  run entrypoints as user: ${options.runEntrypointsAsUser}`);
+  console.log(`  run-as user: ${options.runAsUser}`);
+  console.log(`  run-as uid: ${options.runAsUid || "(unset)"}`);
+  console.log(`  run-as gid: ${options.runAsGid || "(unset)"}`);
+  console.log(`  run-as home: ${options.runAsHome || "(unset)"}`);
+  console.log(`  running in pre-hook: ${process.env.GHA_ENTRYPOINT_PROBE_RUNNING_IN_PRE || "false"}`);
   console.log(`  github token available: ${options.githubToken ? "yes" : "no"}`);
   console.log("  action cache roots:");
   for (const actionCacheRoot of options.actionCacheRoots) {
@@ -317,7 +338,14 @@ function patchAction(options, metadataFile) {
 
   const actionDir = path.dirname(metadataFile);
   const metadata = parseActionMetadata(original);
+  const probeActionMetadata = normalizeExistingPath(findActionMetadata(options.actionRepoRoot));
+  const isProbeAction = probeActionMetadata && normalizeExistingPath(metadataFile) === probeActionMetadata;
   console.log(`action runtime: ${metadata.using || "(missing)"}`);
+  if (isProbeAction && options.runEntrypointsAsUser) {
+    console.log(
+      "current probe action entrypoints stay on the runner user so the post hook can restore system changes",
+    );
+  }
 
   if (metadata.using && metadata.using.startsWith("node")) {
     for (const entrypoint of metadata.nodeEntrypoints) {
@@ -330,6 +358,7 @@ function patchAction(options, metadataFile) {
           options,
           entrypointFile,
           `${entrypoint.key} ${relativeForLog(entrypointFile, options.workspace)}`,
+          { runAsUser: !isProbeAction },
         );
       } else {
         console.error(
@@ -631,7 +660,7 @@ function printStatementForShell(shell, message, indent) {
   return `${indent}echo ${quotePosix(message)} # ${TOKEN}`;
 }
 
-function patchJavaScriptEntrypoint(options, file, label) {
+function patchJavaScriptEntrypoint(options, file, label, settings = {}) {
   const original = readText(file);
   if (original == null) {
     return;
@@ -644,16 +673,71 @@ function patchJavaScriptEntrypoint(options, file, label) {
 
   const newline = original.includes("\r\n") ? "\r\n" : "\n";
   const lines = original.split(/\r?\n/);
-  const insertion = [
-    `// ${TOKEN}: instrumented js`,
-    `console.log(${JSON.stringify(`${options.marker} node ${label}`)});`,
-  ];
+  const insertion = buildJavaScriptInstrumentation(
+    options,
+    label,
+    settings.runAsUser !== false,
+  );
   const insertAt = lines[0] && lines[0].startsWith("#!") ? 1 : 0;
   lines.splice(insertAt, 0, ...insertion);
   writeText(file, lines.join(newline));
   options.patchedFiles.add(file);
   options.stats.nodeEntrypointsPatched += 1;
   console.log(`patched node entrypoint: ${relativeForLog(file, options.workspace)}`);
+}
+
+function buildJavaScriptInstrumentation(options, label, allowRunAsUser) {
+  const message = `${options.marker} node ${label}`;
+  const insertion = [`// ${TOKEN}: instrumented js`];
+
+  if (
+    options.runEntrypointsAsUser &&
+    allowRunAsUser &&
+    options.runAsUser &&
+    options.runAsUid
+  ) {
+    insertion.push(
+      "(() => {",
+      `  const __ghaProbeTargetUser = ${JSON.stringify(options.runAsUser)};`,
+      `  const __ghaProbeTargetUid = ${JSON.stringify(options.runAsUid)};`,
+      `  const __ghaProbeTargetHome = ${JSON.stringify(options.runAsHome || "")};`,
+      `  const __ghaProbeMessage = ${JSON.stringify(message)};`,
+      "  const __ghaProbeCurrentUid = typeof process.getuid === \"function\" ? String(process.getuid()) : \"\";",
+      "  if (__ghaProbeCurrentUid && __ghaProbeCurrentUid !== __ghaProbeTargetUid && process.env.GHA_ENTRYPOINT_PROBE_JS_REEXEC !== \"1\") {",
+      "    const __ghaProbeCp = require(\"child_process\");",
+      "    const __ghaProbeFs = require(\"fs\");",
+      "    const __ghaProbePath = require(\"path\");",
+      "    for (const __ghaProbeFile of [process.env.GITHUB_ENV, process.env.GITHUB_OUTPUT, process.env.GITHUB_PATH, process.env.GITHUB_STATE, process.env.GITHUB_STEP_SUMMARY]) {",
+      "      try { if (__ghaProbeFile && __ghaProbeFs.existsSync(__ghaProbeFile)) __ghaProbeFs.chmodSync(__ghaProbeFile, 0o666); } catch {}",
+      "    }",
+      "    const __ghaProbeArgv = process.argv.slice(1);",
+      "    if (__ghaProbeArgv[0] && !__ghaProbePath.isAbsolute(__ghaProbeArgv[0])) {",
+      "      __ghaProbeArgv[0] = __ghaProbePath.resolve(process.cwd(), __ghaProbeArgv[0]);",
+      "    }",
+      "    if (process.env.GHA_ENTRYPOINT_PROBE_JS_REEXEC === \"1\") {",
+      "      console.error(`${__ghaProbeMessage} already reexecuted but uid is still ${__ghaProbeCurrentUid}; expected ${__ghaProbeTargetUid}`);",
+      "      process.exit(1);",
+      "    }",
+      "    console.error(`${__ghaProbeMessage} reexec node as ${__ghaProbeTargetUser}; current uid=${__ghaProbeCurrentUid} target uid=${__ghaProbeTargetUid} cwd=${process.cwd()} argv=${process.argv.join(\" \")}`);",
+      "    const __ghaProbeResult = __ghaProbeCp.spawnSync(",
+      "      \"sudo\",",
+      "      [\"-n\", \"-E\", \"-u\", __ghaProbeTargetUser, process.execPath, ...__ghaProbeArgv],",
+      "      { stdio: \"inherit\", cwd: process.cwd(), env: { ...process.env, HOME: __ghaProbeTargetHome || process.env.HOME || \"\", GHA_ENTRYPOINT_PROBE_JS_REEXEC: \"1\" } },",
+      "    );",
+      "    if (__ghaProbeResult.error) {",
+      "      console.error(`${__ghaProbeMessage} sudo reexec failed: ${__ghaProbeResult.error.message}`);",
+      "      process.exit(1);",
+      "    }",
+      "    process.exit(__ghaProbeResult.status == null ? 1 : __ghaProbeResult.status);",
+      "  }",
+      "})();",
+    );
+  }
+
+  insertion.push(
+    `console.log(${JSON.stringify(message)} + " uid=" + (typeof process.getuid === "function" ? process.getuid() : "n/a") + " user=" + (process.env.USER || "") + " home=" + (process.env.HOME || ""));`,
+  );
+  return insertion;
 }
 
 function patchShellEntrypoint(options, file, label) {
@@ -671,7 +755,7 @@ function patchShellEntrypoint(options, file, label) {
   const lines = original.split(/\r?\n/);
   const insertion = [
     `# ${TOKEN}: instrumented shell`,
-    `echo ${quotePosix(`${options.marker} shell ${label}`)}`,
+    ...buildShellEntrypointInstrumentation(options, `${options.marker} shell ${label}`),
   ];
   const insertAt = lines[0] && lines[0].startsWith("#!") ? 1 : 0;
   lines.splice(insertAt, 0, ...insertion);
@@ -679,6 +763,33 @@ function patchShellEntrypoint(options, file, label) {
   options.patchedFiles.add(file);
   options.stats.shellEntrypointsPatched += 1;
   console.log(`patched shell entrypoint: ${relativeForLog(file, options.workspace)}`);
+}
+
+function buildShellEntrypointInstrumentation(options, message) {
+  const lines = [];
+  if (options.runEntrypointsAsUser && options.runAsUser && options.runAsUid) {
+    lines.push(
+      `__gha_probe_target_user=${quotePosix(options.runAsUser)}`,
+      `__gha_probe_target_uid=${quotePosix(options.runAsUid)}`,
+      `__gha_probe_target_home=${quotePosix(options.runAsHome || "")}`,
+      "if command -v id >/dev/null 2>&1 && [ \"$(id -u)\" != \"$__gha_probe_target_uid\" ]; then",
+      '  if [ "${GHA_ENTRYPOINT_PROBE_ENTRYPOINT_ACTIVE:-}" = "1" ]; then',
+      `    echo ${quotePosix(`${message} already reexeced but uid still mismatches target`)}`,
+      "    exit 1",
+      "  fi",
+      '  if [ -n "${RUNNER_TEMP:-}" ] && [ -d "${RUNNER_TEMP}/_runner_file_commands" ]; then chmod -R a+rwX "${RUNNER_TEMP}/_runner_file_commands" 2>/dev/null || true; fi',
+      '  for __gha_probe_file in "${GITHUB_ENV:-}" "${GITHUB_OUTPUT:-}" "${GITHUB_PATH:-}" "${GITHUB_STATE:-}" "${GITHUB_STEP_SUMMARY:-}"; do',
+      '    if [ -n "$__gha_probe_file" ] && [ -e "$__gha_probe_file" ]; then chmod a+rw "$__gha_probe_file" 2>/dev/null || true; fi',
+      "  done",
+      `  echo ${quotePosix(`${message} reexec shell entrypoint as ${options.runAsUser}`)}`,
+      '  exec sudo -n -E -u "$__gha_probe_target_user" env HOME="${__gha_probe_target_home:-${HOME:-}}" GHA_ENTRYPOINT_PROBE_ENTRYPOINT_ACTIVE=1 "$0" "$@"',
+      "fi",
+    );
+  }
+  lines.push(
+    `echo ${quotePosix(message)} uid=$(id -u 2>/dev/null || echo n/a) user=$(id -un 2>/dev/null || echo n/a) home="\${HOME:-}"`,
+  );
+  return lines;
 }
 
 function resolveUse(options, rawUse, baseDir) {
@@ -920,12 +1031,7 @@ function installShellInstrumentation(options) {
       continue;
     }
     const shim = path.join(shimDir, command);
-    const script = [
-      "#!/bin/sh",
-      `printf '%s\\n' ${quotePosix(`${options.marker} shell ${command}`)}`,
-      `exec ${quotePosix(realCommand)} "$@"`,
-      "",
-    ].join("\n");
+    const script = buildShellShimScript(options, command, realCommand);
     fs.writeFileSync(shim, script, { mode: 0o755 });
     options.stats.shellShimsInstalled += 1;
     console.log(`  shim ${command}: ${shim} -> ${realCommand}`);
@@ -948,6 +1054,45 @@ function installShellInstrumentation(options) {
 
   options.patchedFiles.add(shimDir);
   options.patchedFiles.add(bashEnv);
+}
+
+function buildShellShimScript(options, command, realCommand) {
+  const message = `${options.marker} shell ${command}`;
+  const lines = [
+    "#!/usr/bin/bash",
+    "set -euo pipefail",
+    `real=${quotePosix(realCommand)}`,
+    `message=${quotePosix(message)}`,
+    `run_as_enabled=${quotePosix(options.runEntrypointsAsUser ? "true" : "false")}`,
+    `run_as_user=${quotePosix(options.runAsUser || "")}`,
+    `run_as_uid=${quotePosix(options.runAsUid || "")}`,
+    `run_as_home=${quotePosix(options.runAsHome || "")}`,
+    `wrapper_name=${quotePosix(command)}`,
+    'if [ -n "${GHA_ENTRYPOINT_PROBE_WRAPPER_ACTIVE:-}" ]; then',
+    '  exec "$real" "$@"',
+    "fi",
+    'export GHA_ENTRYPOINT_PROBE_WRAPPER_ACTIVE="$wrapper_name"',
+    "prepare_file_commands() {",
+    '  if [ -n "${RUNNER_TEMP:-}" ] && [ -d "${RUNNER_TEMP}/_runner_file_commands" ]; then',
+    '    chmod -R a+rwX "${RUNNER_TEMP}/_runner_file_commands" 2>/dev/null || true',
+    "  fi",
+    '  for file in "${GITHUB_ENV:-}" "${GITHUB_OUTPUT:-}" "${GITHUB_PATH:-}" "${GITHUB_STATE:-}" "${GITHUB_STEP_SUMMARY:-}"; do',
+    '    if [ -n "$file" ] && [ -e "$file" ]; then',
+    '      chmod a+rw "$file" 2>/dev/null || true',
+    "    fi",
+    "  done",
+    "}",
+    'current_uid="$(id -u 2>/dev/null || true)"',
+    'if [ "$run_as_enabled" = "true" ] && [ -n "$run_as_user" ] && [ -n "$run_as_uid" ] && [ "$current_uid" != "$run_as_uid" ]; then',
+    "  prepare_file_commands",
+    '  printf "%s\\n" "$message reexec shell command as $run_as_user; current uid=${current_uid:-n/a} target uid=$run_as_uid argv=$*"',
+    '  exec sudo -n -E -u "$run_as_user" env HOME="${run_as_home:-${HOME:-}}" GHA_ENTRYPOINT_PROBE_WRAPPER_ACTIVE="$wrapper_name" "$real" "$@"',
+    "fi",
+    'printf "%s\\n" "$message uid=${current_uid:-n/a} user=$(id -un 2>/dev/null || echo n/a) home=${HOME:-}"',
+    'exec "$real" "$@"',
+    "",
+  ];
+  return lines.join("\n");
 }
 
 function findCommand(command, pathEntries) {
