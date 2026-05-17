@@ -42,6 +42,8 @@ The entrypoint set follows GitHub's
 - Composite/action/workflow `run:` blocks
 - Custom `shell:` paths used by `run:` steps
 - Later top-level shell steps through `GITHUB_PATH` shims and `BASH_ENV`
+- Later Docker invocations through a temporary `/usr/bin/docker` wrapper on
+  Linux runners when `install-docker-wrapper` is enabled
 
 On a shared runner, top-level workflow `run:` commands are already planned by
 the time the first action step starts. The action still scans and patches the
@@ -51,11 +53,10 @@ and downloaded action source files are read from disk later and can be patched
 directly.
 
 The shared-runner demo intentionally includes Docker `pre-entrypoint`,
-`entrypoint`, and `post-entrypoint` coverage, but the run proves a limitation:
-Dockerfile actions are built before the first normal workflow step, and
-`pre-entrypoint` runs before the probe action gets control. This implementation
-logs that limitation rather than claiming Docker image entrypoint code was
-patched after build.
+`entrypoint`, and `post-entrypoint` coverage. Dockerfile actions are built
+before the probe can install its wrapper, so image build cannot be intercepted
+from an action. The probe attempts to install `/usr/bin/docker` interception in
+its action `pre` hook, then restores the original binary in `post`.
 
 If a `shell:` value references an absolute or relative path and no executable
 file can be found at the resolved candidates, the probe fails the job and prints

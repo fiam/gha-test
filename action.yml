@@ -23,10 +23,17 @@ inputs:
     description: Token used to fetch the current workflow when the workspace has not been checked out yet.
     required: false
     default: ""
+  install-docker-wrapper:
+    description: Replace /usr/bin/docker with a temporary wrapper on Linux hosted runners.
+    required: false
+    default: "true"
 
 runs:
   using: node24
+  pre: src/pre.js
   main: src/index.js
+  post: src/post.js
+  post-if: always()
 
 branding:
   icon: activity

@@ -350,7 +350,7 @@ function patchAction(options, metadataFile) {
       `docker action limitation: ${relativeForLog(
         metadataFile,
         options.workspace,
-      )} was built before this probe step on GitHub-hosted runners; pre-entrypoint has already run, and Dockerfile image content is not patched after build`,
+      )} was built before this probe action main step; Docker image content is not patched after build, so Docker coverage depends on the /usr/bin/docker wrapper from the action pre-hook`,
     );
 
     for (const entrypoint of metadata.dockerEntrypoints) {
