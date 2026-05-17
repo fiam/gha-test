@@ -39,8 +39,6 @@ The entrypoint set follows GitHub's
 [metadata syntax reference](https://docs.github.com/en/actions/reference/metadata-syntax-reference).
 
 - JavaScript action metadata: `runs.pre`, `runs.main`, and `runs.post`
-- Docker action metadata: `runs.pre-entrypoint`, `runs.entrypoint`, and
-  `runs.post-entrypoint` when they point at files in the action directory
 - Composite/action/workflow `run:` blocks
 - Custom `shell:` paths used by `run:` steps
 - Later top-level shell steps through `GITHUB_PATH` shims and `BASH_ENV`
@@ -51,6 +49,13 @@ workflow file copy when available, but the live proof for later top-level
 `run:` steps comes from the installed shell shims/startup hook. Action metadata
 and downloaded action source files are read from disk later and can be patched
 directly.
+
+The shared-runner demo intentionally includes Docker `pre-entrypoint`,
+`entrypoint`, and `post-entrypoint` coverage, but the run proves a limitation:
+Dockerfile actions are built before the first normal workflow step, and
+`pre-entrypoint` runs before the probe action gets control. This implementation
+logs that limitation rather than claiming Docker image entrypoint code was
+patched after build.
 
 If a `shell:` value references an absolute or relative path and no executable
 file can be found at the resolved candidates, the probe fails the job and prints

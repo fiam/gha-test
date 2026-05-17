@@ -346,6 +346,13 @@ function patchAction(options, metadataFile) {
   }
 
   if (metadata.using === "docker") {
+    console.error(
+      `docker action limitation: ${relativeForLog(
+        metadataFile,
+        options.workspace,
+      )} was built before this probe step on GitHub-hosted runners; pre-entrypoint has already run, and Dockerfile image content is not patched after build`,
+    );
+
     for (const entrypoint of metadata.dockerEntrypoints) {
       const entrypointFile = path.resolve(actionDir, entrypoint.value);
       console.log(
