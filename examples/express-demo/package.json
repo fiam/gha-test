@@ -1,0 +1,20 @@
+{
+  "name": "express-demo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tiny Express app used to exercise sbx entrypoint wrapping.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "supertest": "^7.0.0"
+  }
+}

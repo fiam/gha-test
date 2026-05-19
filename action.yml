@@ -39,6 +39,42 @@ inputs:
     description: Re-exec patched shell, JavaScript, and Docker entrypoints as run-as-user.
     required: false
     default: "false"
+  sandbox-enabled:
+    description: Start an sbx sandbox and run patched shell, JavaScript, and Docker entrypoints through sbx exec.
+    required: false
+    default: "false"
+  install-sbx-cli:
+    description: Install sbx from docker/sbx-releases before creating the sandbox.
+    required: false
+    default: "true"
+  sbx-deb-version:
+    description: docker/sbx-releases tag used when installing sbx.
+    required: false
+    default: "v0.30.0"
+  sandbox-template:
+    description: Optional sbx template or image reference used for the shell sandbox.
+    required: false
+    default: ""
+  sandbox-name:
+    description: Optional explicit sbx sandbox name. Defaults to the current GitHub run/job.
+    required: false
+    default: ""
+  sandbox-network-policy:
+    description: sbx default network policy to set before sandbox creation.
+    required: false
+    default: "balanced"
+  sandbox-work-root:
+    description: Host path mounted into the sandbox. Defaults to the runner _work directory.
+    required: false
+    default: ""
+  docker-username:
+    description: Docker Hub username used for sbx image pulls when sandbox mode is enabled.
+    required: false
+    default: ""
+  docker-password:
+    description: Docker Hub password or token used for sbx image pulls when sandbox mode is enabled.
+    required: false
+    default: ""
 
 runs:
   using: node24

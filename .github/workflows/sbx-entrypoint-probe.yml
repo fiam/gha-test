@@ -1,0 +1,79 @@
+name: Entrypoint probe sbx sandbox
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SBX_SANDBOX_FILE: examples/express-demo/sandbox.yml
+
+jobs:
+  npm:
+    name: npm
+    runs-on: ubuntu-24.04
+
+    defaults:
+      run:
+        working-directory: examples/express-demo
+
+    steps:
+      - name: Start sandboxing probe
+        uses: fiam/gha-test@main
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          github-token: ${{ github.token }}
+          marker: "[entrypoint-sbx-demo] before"
+          sandbox-enabled: "true"
+          sandbox-template: docker.io/dhi/gha-step-sandbox:latest
+          sandbox-network-policy: balanced
+          docker-username: ${{ vars.DOCKER_USERNAME }}
+          docker-password: ${{ secrets.DOCKER_PAT }}
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Repo metadata via actions/github-script (Marketplace JS action, sandboxed)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const { data } = await github.rest.repos.get({ owner, repo });
+            core.info(`full_name      : ${data.full_name}`);
+            core.info(`private        : ${data.private}`);
+            core.info(`default_branch : ${data.default_branch}`);
+
+      - name: Call GitHub API with GITHUB_TOKEN
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "GET https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          repo_json="$(curl --silent --show-error --fail \
+               -H "Authorization: Bearer $GITHUB_TOKEN" \
+               -H "Accept: application/vnd.github+json" \
+               -H "X-GitHub-Api-Version: 2022-11-28" \
+               "https://api.github.com/repos/${GITHUB_REPOSITORY}")"
+          full_name="$(echo "$repo_json" | grep -oE '"full_name":[^,]*' | head -1)"
+          private="$(echo "$repo_json" | grep -oE '"private":[^,]*' | head -1)"
+          default_branch="$(echo "$repo_json" | grep -oE '"default_branch":[^,]*' | head -1)"
+          echo "GitHub API responded 200 with:"
+          echo "  $full_name"
+          echo "  $private"
+          echo "  $default_branch"
+
+      - name: npm install
+        env:
+          NPM_CONFIG_FETCH_RETRIES: "0"
+          NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "1000"
+          NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "1000"
+          NPM_CONFIG_FETCH_TIMEOUT: "5000"
+        run: |
+          node --version
+          npm --version
+          npm install
+
+      - name: npm test
+        run: npm test

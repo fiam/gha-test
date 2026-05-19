@@ -1,0 +1,11 @@
+# Mirrors the sbx-runner express-demo policy shape. The action-level
+# sandbox mode in this repo currently starts sbx directly and does not
+# materialize this file into a per-workflow network kit.
+network:
+  allow:
+    - registry.npmjs.org
+    - "*.npmjs.com"
+    - github.com
+    - api.github.com
+    - codeload.github.com
+    - "*.githubusercontent.com"

@@ -39,6 +39,12 @@ async function main() {
     installShellShims: getBooleanInput("install-shell-shims", true),
     patchWorkspace: getBooleanInput("patch-workspace", true),
     patchDownloadedActions: getBooleanInput("patch-downloaded-actions", true),
+    sandboxEnabled:
+      getBooleanInput("sandbox-enabled", false) ||
+      process.env.GHA_ENTRYPOINT_PROBE_SANDBOX_ENABLED === "true",
+    sandboxName: process.env.GHA_ENTRYPOINT_PROBE_SANDBOX_NAME || "",
+    sandboxWorkRoot: process.env.GHA_ENTRYPOINT_PROBE_SANDBOX_WORK_ROOT || "",
+    sandboxHome: process.env.GHA_ENTRYPOINT_PROBE_SANDBOX_HOME || "",
     runEntrypointsAsUser: getBooleanInput("run-entrypoints-as-user", false),
     runAsUser: getInput("run-as-user", "unpriv"),
     runAsUid: process.env.GHA_ENTRYPOINT_PROBE_UNPRIV_UID || "",
@@ -125,6 +131,10 @@ function logEnvironment(options) {
   console.log(`  install shell shims: ${options.installShellShims}`);
   console.log(`  patch workspace: ${options.patchWorkspace}`);
   console.log(`  patch downloaded actions: ${options.patchDownloadedActions}`);
+  console.log(`  sandbox enabled: ${options.sandboxEnabled}`);
+  console.log(`  sandbox name: ${options.sandboxName || "(unset)"}`);
+  console.log(`  sandbox work root: ${options.sandboxWorkRoot || "(unset)"}`);
+  console.log(`  sandbox home: ${options.sandboxHome || "(unset)"}`);
   console.log(`  run entrypoints as user: ${options.runEntrypointsAsUser}`);
   console.log(`  run-as user: ${options.runAsUser}`);
   console.log(`  run-as uid: ${options.runAsUid || "(unset)"}`);
@@ -341,9 +351,9 @@ function patchAction(options, metadataFile) {
   const probeActionMetadata = normalizeExistingPath(findActionMetadata(options.actionRepoRoot));
   const isProbeAction = probeActionMetadata && normalizeExistingPath(metadataFile) === probeActionMetadata;
   console.log(`action runtime: ${metadata.using || "(missing)"}`);
-  if (isProbeAction && options.runEntrypointsAsUser) {
+  if (isProbeAction && (options.runEntrypointsAsUser || options.sandboxEnabled)) {
     console.log(
-      "current probe action entrypoints stay on the runner user so the post hook can restore system changes",
+      "current probe action entrypoints stay on the host runner so the post hook can restore system changes",
     );
   }
 
@@ -358,7 +368,7 @@ function patchAction(options, metadataFile) {
           options,
           entrypointFile,
           `${entrypoint.key} ${relativeForLog(entrypointFile, options.workspace)}`,
-          { runAsUser: !isProbeAction },
+          { runAsUser: !isProbeAction, sandbox: !isProbeAction },
         );
       } else {
         console.error(
@@ -677,6 +687,7 @@ function patchJavaScriptEntrypoint(options, file, label, settings = {}) {
     options,
     label,
     settings.runAsUser !== false,
+    settings.sandbox !== false,
   );
   const insertAt = lines[0] && lines[0].startsWith("#!") ? 1 : 0;
   lines.splice(insertAt, 0, ...insertion);
@@ -686,9 +697,52 @@ function patchJavaScriptEntrypoint(options, file, label, settings = {}) {
   console.log(`patched node entrypoint: ${relativeForLog(file, options.workspace)}`);
 }
 
-function buildJavaScriptInstrumentation(options, label, allowRunAsUser) {
+function buildJavaScriptInstrumentation(options, label, allowRunAsUser, allowSandbox) {
   const message = `${options.marker} node ${label}`;
   const insertion = [`// ${TOKEN}: instrumented js`];
+
+  if (options.sandboxEnabled && allowSandbox && options.sandboxName) {
+    insertion.push(
+      "(() => {",
+      `  const __ghaProbeSandboxName = ${JSON.stringify(options.sandboxName)};`,
+      `  const __ghaProbeSandboxHome = ${JSON.stringify(options.sandboxHome || "")};`,
+      `  const __ghaProbeShimDir = ${JSON.stringify(options.shimDir || "")};`,
+      `  const __ghaProbeMessage = ${JSON.stringify(message)};`,
+      "  if (__ghaProbeSandboxName && process.env.GHA_ENTRYPOINT_PROBE_SANDBOX_ACTIVE !== \"1\") {",
+      "    const __ghaProbeCp = require(\"child_process\");",
+      "    const __ghaProbeFs = require(\"fs\");",
+      "    const __ghaProbeOs = require(\"os\");",
+      "    const __ghaProbePath = require(\"path\");",
+      "    const __ghaProbeEnv = { ...process.env, GHA_ENTRYPOINT_PROBE_SANDBOX_ACTIVE: \"1\" };",
+      "    if (__ghaProbeSandboxHome) __ghaProbeEnv.HOME = __ghaProbeSandboxHome;",
+      "    if (__ghaProbeShimDir && __ghaProbeEnv.PATH) {",
+      "      __ghaProbeEnv.PATH = __ghaProbeEnv.PATH.split(__ghaProbePath.delimiter).filter((entry) => entry !== __ghaProbeShimDir).join(__ghaProbePath.delimiter);",
+      "    }",
+      "    const __ghaProbeEnvFile = __ghaProbePath.join(process.env.RUNNER_TEMP || __ghaProbeOs.tmpdir(), `gha-entrypoint-probe-js-env-${process.pid}-${Date.now()}`);",
+      "    const __ghaProbeEnvText = Object.entries(__ghaProbeEnv)",
+      "      .filter(([key, value]) => key && !key.includes(\"=\") && value != null && !String(value).includes(\"\\n\"))",
+      "      .map(([key, value]) => `${key}=${value}`)",
+      "      .join(\"\\n\") + \"\\n\";",
+      "    __ghaProbeFs.writeFileSync(__ghaProbeEnvFile, __ghaProbeEnvText, { mode: 0o600 });",
+      "    const __ghaProbeArgv = process.argv.slice(1);",
+      "    if (__ghaProbeArgv[0] && !__ghaProbePath.isAbsolute(__ghaProbeArgv[0])) {",
+      "      __ghaProbeArgv[0] = __ghaProbePath.resolve(process.cwd(), __ghaProbeArgv[0]);",
+      "    }",
+      "    const __ghaProbeSbxArgs = [\"exec\", \"--env-file\", __ghaProbeEnvFile];",
+      "    if (process.cwd()) __ghaProbeSbxArgs.push(\"-w\", process.cwd());",
+      "    __ghaProbeSbxArgs.push(__ghaProbeSandboxName, \"sh\", \"-lc\", \"if [ -x /__sbx/node ]; then exec /__sbx/node \\\"$@\\\"; else exec node \\\"$@\\\"; fi\", \"gha-entrypoint-probe-node\", ...__ghaProbeArgv);",
+      "    console.error(`${__ghaProbeMessage} sbx exec node in ${__ghaProbeSandboxName}; cwd=${process.cwd()} argv=${process.argv.join(\" \")}`);",
+      "    const __ghaProbeResult = __ghaProbeCp.spawnSync(\"sbx\", __ghaProbeSbxArgs, { stdio: \"inherit\", cwd: process.cwd(), env: process.env });",
+      "    try { __ghaProbeFs.unlinkSync(__ghaProbeEnvFile); } catch {}",
+      "    if (__ghaProbeResult.error) {",
+      "      console.error(`${__ghaProbeMessage} sbx exec failed: ${__ghaProbeResult.error.message}`);",
+      "      process.exit(1);",
+      "    }",
+      "    process.exit(__ghaProbeResult.status == null ? 1 : __ghaProbeResult.status);",
+      "  }",
+      "})();",
+    );
+  }
 
   if (
     options.runEntrypointsAsUser &&
@@ -767,6 +821,44 @@ function patchShellEntrypoint(options, file, label) {
 
 function buildShellEntrypointInstrumentation(options, message) {
   const lines = [];
+  if (options.sandboxEnabled && options.sandboxName) {
+    lines.push(
+      `__gha_probe_sandbox_name=${quotePosix(options.sandboxName)}`,
+      `__gha_probe_sandbox_home=${quotePosix(options.sandboxHome || "")}`,
+      `__gha_probe_shim_dir=${quotePosix(options.shimDir || "")}`,
+      'if [ -n "$__gha_probe_sandbox_name" ] && [ "${GHA_ENTRYPOINT_PROBE_SANDBOX_ACTIVE:-}" != "1" ]; then',
+      '  __gha_probe_entrypoint="$0"',
+      '  case "$__gha_probe_entrypoint" in /*) ;; *) __gha_probe_entrypoint="$(pwd)/$__gha_probe_entrypoint" ;; esac',
+      '  __gha_probe_env_file="$(mktemp "${RUNNER_TEMP:-/tmp}/gha-entrypoint-probe-shell-env.XXXXXX")"',
+      '  __gha_probe_path="${PATH:-}"',
+      '  if [ -n "$__gha_probe_shim_dir" ] && [ -n "$__gha_probe_path" ]; then',
+      '    __gha_probe_new_path=""',
+      '    __gha_probe_old_ifs="$IFS"',
+      '    IFS=:',
+      '    for __gha_probe_path_part in $__gha_probe_path; do',
+      '      if [ "$__gha_probe_path_part" = "$__gha_probe_shim_dir" ]; then continue; fi',
+      '      if [ -z "$__gha_probe_new_path" ]; then __gha_probe_new_path="$__gha_probe_path_part"; else __gha_probe_new_path="$__gha_probe_new_path:$__gha_probe_path_part"; fi',
+      "    done",
+      '    IFS="$__gha_probe_old_ifs"',
+      '    __gha_probe_path="$__gha_probe_new_path"',
+      "  fi",
+      '  env | grep -v "^GHA_ENTRYPOINT_PROBE_SANDBOX_ACTIVE=" | grep -v "^PATH=" | grep -v "^HOME=" > "$__gha_probe_env_file"',
+      '  printf "%s\\n" "GHA_ENTRYPOINT_PROBE_SANDBOX_ACTIVE=1" >> "$__gha_probe_env_file"',
+      '  printf "%s\\n" "PATH=$__gha_probe_path" >> "$__gha_probe_env_file"',
+      '  if [ -n "$__gha_probe_sandbox_home" ]; then printf "%s\\n" "HOME=$__gha_probe_sandbox_home" >> "$__gha_probe_env_file"; fi',
+      `  echo ${quotePosix(`${message} sbx exec shell entrypoint`)}`,
+      '  if [ -n "${PWD:-}" ]; then',
+      '    sbx exec --env-file "$__gha_probe_env_file" -w "$PWD" "$__gha_probe_sandbox_name" "$__gha_probe_entrypoint" "$@"',
+      "  else",
+      '    sbx exec --env-file "$__gha_probe_env_file" "$__gha_probe_sandbox_name" "$__gha_probe_entrypoint" "$@"',
+      "  fi",
+      '  __gha_probe_status="$?"',
+      '  rm -f "$__gha_probe_env_file"',
+      '  exit "$__gha_probe_status"',
+      "fi",
+    );
+  }
+
   if (options.runEntrypointsAsUser && options.runAsUser && options.runAsUid) {
     lines.push(
       `__gha_probe_target_user=${quotePosix(options.runAsUser)}`,
@@ -1020,10 +1112,14 @@ function installShellInstrumentation(options) {
     `${TOKEN}-bin-${process.pid}`,
   );
   fs.mkdirSync(shimDir, { recursive: true });
+  options.shimDir = shimDir;
   console.log(`install shell shims in ${shimDir}`);
 
   const pathEntries = (process.env.PATH || "").split(path.delimiter);
   const commands = ["bash", "sh", "zsh", "pwsh", "powershell", "cmd", "python", "python3", "node"];
+  if (options.sandboxEnabled) {
+    commands.push("docker");
+  }
   for (const command of commands) {
     const realCommand = findCommand(command, pathEntries);
     if (!realCommand) {
@@ -1039,6 +1135,9 @@ function installShellInstrumentation(options) {
 
   appendFileFromEnv("GITHUB_PATH", `${shimDir}${os.EOL}`);
   console.log(`appended shim directory to GITHUB_PATH: ${shimDir}`);
+  appendFileFromEnv("GITHUB_ENV", `GHA_ENTRYPOINT_PROBE_SHIM_DIR=${shimDir}${os.EOL}`);
+  process.env.GHA_ENTRYPOINT_PROBE_SHIM_DIR = shimDir;
+  console.log(`appended GHA_ENTRYPOINT_PROBE_SHIM_DIR to GITHUB_ENV: ${shimDir}`);
 
   const bashEnv = path.join(
     process.env.RUNNER_TEMP || os.tmpdir(),
@@ -1058,11 +1157,17 @@ function installShellInstrumentation(options) {
 
 function buildShellShimScript(options, command, realCommand) {
   const message = `${options.marker} shell ${command}`;
+  const sandboxCommand = sandboxCommandForShim(command);
   const lines = [
     "#!/usr/bin/bash",
     "set -euo pipefail",
     `real=${quotePosix(realCommand)}`,
     `message=${quotePosix(message)}`,
+    `sandbox_enabled=${quotePosix(options.sandboxEnabled && options.sandboxName ? "true" : "false")}`,
+    `sandbox_name=${quotePosix(options.sandboxName || "")}`,
+    `sandbox_home=${quotePosix(options.sandboxHome || "")}`,
+    `shim_dir=${quotePosix(options.shimDir || "")}`,
+    `sandbox_command=${quotePosix(sandboxCommand)}`,
     `run_as_enabled=${quotePosix(options.runEntrypointsAsUser ? "true" : "false")}`,
     `run_as_user=${quotePosix(options.runAsUser || "")}`,
     `run_as_uid=${quotePosix(options.runAsUid || "")}`,
@@ -1072,6 +1177,27 @@ function buildShellShimScript(options, command, realCommand) {
     '  exec "$real" "$@"',
     "fi",
     'export GHA_ENTRYPOINT_PROBE_WRAPPER_ACTIVE="$wrapper_name"',
+    "sanitize_path_for_sandbox() {",
+    '  local current_path="${PATH:-}"',
+    '  local new_path=""',
+    '  local old_ifs="$IFS"',
+    '  IFS=:',
+    '  for path_part in $current_path; do',
+    '    if [ -n "$shim_dir" ] && [ "$path_part" = "$shim_dir" ]; then',
+    "      continue",
+    "    fi",
+    '    if [ -z "$new_path" ]; then new_path="$path_part"; else new_path="$new_path:$path_part"; fi',
+    "  done",
+    '  IFS="$old_ifs"',
+    '  printf "%s" "$new_path"',
+    "}",
+    "write_sandbox_env_file() {",
+    '  local env_file="$1"',
+    '  env | grep -v "^GHA_ENTRYPOINT_PROBE_WRAPPER_ACTIVE=" | grep -v "^GHA_ENTRYPOINT_PROBE_SANDBOX_ACTIVE=" | grep -v "^PATH=" | grep -v "^HOME=" > "$env_file"',
+    '  printf "%s\\n" "GHA_ENTRYPOINT_PROBE_SANDBOX_ACTIVE=1" >> "$env_file"',
+    '  printf "%s\\n" "PATH=$(sanitize_path_for_sandbox)" >> "$env_file"',
+    '  if [ -n "$sandbox_home" ]; then printf "%s\\n" "HOME=$sandbox_home" >> "$env_file"; fi',
+    "}",
     "prepare_file_commands() {",
     '  if [ -n "${RUNNER_TEMP:-}" ] && [ -d "${RUNNER_TEMP}/_runner_file_commands" ]; then',
     '    chmod -R a+rwX "${RUNNER_TEMP}/_runner_file_commands" 2>/dev/null || true',
@@ -1082,6 +1208,18 @@ function buildShellShimScript(options, command, realCommand) {
     "    fi",
     "  done",
     "}",
+    'if [ "$sandbox_enabled" = "true" ] && [ -n "$sandbox_name" ] && [ "${GHA_ENTRYPOINT_PROBE_SANDBOX_ACTIVE:-}" != "1" ]; then',
+    '  env_file="$(mktemp "${RUNNER_TEMP:-/tmp}/gha-entrypoint-probe-shim-env.XXXXXX")"',
+    '  write_sandbox_env_file "$env_file"',
+    '  sbx_args=("exec" "--env-file" "$env_file")',
+    '  if [ -n "${PWD:-}" ]; then sbx_args+=("-w" "$PWD"); fi',
+    '  sbx_args+=("$sandbox_name" "sh" "-lc" \'if [ -x "/__sbx/$1" ]; then __cmd="/__sbx/$1"; else __cmd="$1"; fi; shift; exec "$__cmd" "$@"\' "gha-entrypoint-probe-dispatch" "$sandbox_command" "$@")',
+    '  printf "%s\\n" "$message sbx exec $sandbox_command in $sandbox_name; argv=$*"',
+    '  sbx "${sbx_args[@]}"',
+    '  status=$?',
+    '  rm -f "$env_file"',
+    '  exit "$status"',
+    "fi",
     'current_uid="$(id -u 2>/dev/null || true)"',
     'if [ "$run_as_enabled" = "true" ] && [ -n "$run_as_user" ] && [ -n "$run_as_uid" ] && [ "$current_uid" != "$run_as_uid" ]; then',
     "  prepare_file_commands",
@@ -1093,6 +1231,16 @@ function buildShellShimScript(options, command, realCommand) {
     "",
   ];
   return lines.join("\n");
+}
+
+function sandboxCommandForShim(command) {
+  if (command === "powershell") {
+    return "pwsh";
+  }
+  if (command === "cmd" || command === "cmd.exe") {
+    return "cmd";
+  }
+  return command;
 }
 
 function findCommand(command, pathEntries) {

@@ -33,6 +33,14 @@ It runs the probe before checkout, then exercises:
 - Docker action `pre-entrypoint`, `entrypoint`, and `post-entrypoint`
 - a referenced reusable workflow
 
+An opt-in sbx demo is
+[`.github/workflows/sbx-entrypoint-probe.yml`](.github/workflows/sbx-entrypoint-probe.yml).
+It uses the same patching pass, but the action pre-hook installs/starts `sbx`
+on a normal `ubuntu-24.04` runner and the generated shell, JavaScript, and
+Docker wrappers dispatch later entrypoints through `sbx exec`. Configure
+`vars.DOCKER_USERNAME` and `secrets.DOCKER_PAT` for Docker Hub access, then run
+the workflow manually.
+
 ## What Gets Patched
 
 The entrypoint set follows GitHub's
@@ -44,6 +52,19 @@ The entrypoint set follows GitHub's
 - Later top-level shell steps through `GITHUB_PATH` shims and `BASH_ENV`
 - Later Docker invocations through a temporary `/usr/bin/docker` wrapper on
   Linux runners when `install-docker-wrapper` is enabled
+
+When `sandbox-enabled: "true"` is set, patched entrypoints are re-executed in
+the per-job sandbox instead of only printing the marker. The action mounts the
+runner `_work` directory into the sandbox, passes the step environment through
+an `--env-file`, and sets `GHA_ENTRYPOINT_PROBE_SANDBOX_ACTIVE=1` inside the
+sandbox to avoid recursive wrapping.
+
+This action-level mode is intentionally smaller than the custom sbx runner
+setup: it does not install runner service hooks, bind-mount over the runner's
+Node binaries, or proxy credentials. Secrets present in a step environment are
+therefore passed into the sandbox process. The existing Dockerfile-action
+timing caveat still applies: image build preparation that GitHub performs
+before the first step cannot be moved into the sandbox by a later action.
 
 On a shared runner, top-level workflow `run:` commands are already planned by
 the time the first action step starts. The action still scans and patches the
