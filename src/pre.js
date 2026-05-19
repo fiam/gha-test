@@ -225,16 +225,31 @@ function authenticateSbx(username, password) {
     console.log("docker CLI is not present; skipping docker login");
   }
 
+  if (trySbxLogin(username, password, "Docker password/PAT")) {
+    return;
+  }
+
+  const hubToken = exchangeDockerHubToken(username, password);
+  if (hubToken && trySbxLogin(username, hubToken, "Docker Hub issued token")) {
+    return;
+  }
+
+  console.error("::warning::sbx login failed; continuing with DOCKER_AUTH_CONFIG for this setup process");
+}
+
+function trySbxLogin(username, secret, label) {
   try {
     runWithInput(
       "sbx",
       ["login", "--username", username, "--password-stdin"],
-      `${password}\n`,
+      `${secret}\n`,
       "sbx login --username <docker-username> --password-stdin",
     );
-    console.log(`sbx logged in to docker.io as ${username}`);
+    console.log(`sbx logged in to docker.io as ${username} using ${label}`);
+    return true;
   } catch (error) {
-    console.error(`::warning::sbx login failed; continuing with DOCKER_AUTH_CONFIG for this setup process: ${error.message}`);
+    console.error(`::warning::sbx login with ${label} failed: ${error.message}`);
+    return false;
   }
 }
 
@@ -247,6 +262,53 @@ function setDockerAuthConfig(username, password) {
     },
   });
   console.log("prepared DOCKER_AUTH_CONFIG for sbx image pulls in this pre-hook process");
+}
+
+function exchangeDockerHubToken(username, password) {
+  if (!commandExists("curl")) {
+    console.error("::warning::curl is not present; cannot exchange Docker Hub PAT for login token");
+    return "";
+  }
+
+  const payload = JSON.stringify({ username, password });
+  let response = "";
+  try {
+    response = runCaptureWithInput(
+      "curl",
+      [
+        "-fsSL",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "@-",
+        "https://hub.docker.com/v2/users/login/",
+      ],
+      payload,
+      "curl -fsSL -X POST https://hub.docker.com/v2/users/login/",
+    );
+  } catch (error) {
+    console.error(`::warning::Docker Hub token exchange failed: ${error.message}`);
+    return "";
+  }
+
+  let parsed = null;
+  try {
+    parsed = JSON.parse(response);
+  } catch (error) {
+    console.error(`::warning::Docker Hub token exchange returned non-JSON output: ${error.message}`);
+    return "";
+  }
+
+  const token = parsed.token || parsed.access_token || parsed.identity_token || "";
+  if (!token) {
+    console.error("::warning::Docker Hub token exchange did not return a token field");
+    return "";
+  }
+
+  console.log("exchanged Docker Hub credentials for an issued login token");
+  return token;
 }
 
 function grantKvmAccess() {
@@ -583,6 +645,23 @@ function runWithInput(command, args, input, logCommand) {
   if (result.status !== 0) {
     throw new Error(`${logCommand || `${command} ${args.join(" ")}`} exited ${result.status}`);
   }
+}
+
+function runCaptureWithInput(command, args, input, logCommand) {
+  console.log(`exec: ${logCommand || `${command} ${args.join(" ")}`}`);
+  const result = childProcess.spawnSync(command, args, {
+    encoding: "utf8",
+    input,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  if (result.stderr) {
+    process.stderr.write(result.stderr);
+  }
+  if (result.status !== 0) {
+    throw new Error(`${logCommand || `${command} ${args.join(" ")}`} exited ${result.status}`);
+  }
+  return result.stdout;
 }
 
 function capture(command, args) {
